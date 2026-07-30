@@ -1,0 +1,97 @@
+
+    572 +    def apply_to_nfcdata(self, nfc_data: NFCData, client_id: str, tracker, key=None) -> NFCData:
+    573 +        try:
+    574 +            if nfc_data.data and len(nfc_data.data) >= 2:
+    575 +                mod = self.apply(nfc_data.data, client_id, tracker, key)
+    576                  if mod != nfc_data.data:
+
+
+   574 -            if nfc_data.data and len(nfc_data.data) >= 2:
+    574 +            if nfc_data.data and len(nfc_data.data) >= 2 and nfc_data.data[-2:] == b'\x90\x00':
+    575                  mod = self.apply(nfc_data.data, client_id, tracker, key)
+
+python3 serverz.py --host 127.0.0.1 --port 15566 --shared-session-tracker
+
+
+     22  from plugins.c2c_pb2 import NFCData
+     23 +from session_tracker import SessionTrackerRegistry
+     24  from typing import List, Optional, Dict
+        ⋮
+    786  # ==================== Server ====================
+    786 -class NFCGateServer(socketserver.ThreadingTCPServer):
+    787 +class NFCGateServer(socketserver.ThreadingTCPServer):
+    788      allow_reuse_address = True
+    789
+    789 -    def __init__(self, server_address, handler, plugins, tls_options=None, cvm_floor="2710"):
+    790 -        super().__init__(server_address, handler)
+    790 +    def __init__(self, server_address, handler, plugins, tls_options=None, cvm_floor="2710",
+    791 +                 shared_session_tracker=False):
+    792 +        super().__init__(server_address, handler)
+    793          self.clients: Dict[int, List] = {}
+        ⋮
+    795          self.total_clients = 0
+    794 -        self.plugins = PluginHandler(plugins)
+    795 -        self.cvm_forcer = EnhancedCVMForce(bytes.fromhex(cvm_floor))
+    796 -        logger.info("=== NFCGate Server v42 - framed session protocol ===")
+    796 +        self.plugins = PluginHandler(plugins)
+    797 +        self.cvm_forcer = EnhancedCVMForce(bytes.fromhex(cvm_floor))
+    798 +        self.session_trackers = (
+    799 +            SessionTrackerRegistry(EMVFlowTracker) if shared_session_tracker else None
+    800 +        )
+    801 +        tracker_mode = "shared-session" if shared_session_tracker else "per-connection"
+    802 +        logger.info(f"=== NFCGate Server v42 - framed session protocol; tracker={tracker_mode} ===")
+    803
+        ⋮
+    814              self.total_clients += 1
+    815 +            if self.session_trackers is not None:
+    816 +                client.emv_tracker = self.session_trackers.acquire(session)
+    817              return True
+        ⋮
+    825              if secret in self.clients and client in self.clients[secret]:
+    818 -                self.clients[secret].remove(client)
+    819 -                self.total_clients -= 1
+    820 -                if not self.clients[secret]:
+    826 +                self.clients[secret].remove(client)
+    827 +                self.total_clients -= 1
+    828 +                if self.session_trackers is not None:
+    829 +                    self.session_trackers.release(secret)
+    830 +                if not self.clients[secret]:
+    831                      del self.clients[secret]
+        ⋮
+    874  # ==================== Main ====================
+    865 -def parse_args():
+    875 +def parse_args():
+    876      parser = argparse.ArgumentParser()
+        ⋮
+    880      parser.add_argument("--tls-key")
+    871 -    parser.add_argument("--cvm-floor", default="2710")
+    872 -    args = parser.parse_args()
+    881 +    parser.add_argument("--cvm-floor", default="2710")
+    882 +    parser.add_argument("--host", default=HOST)
+    883 +    parser.add_argument("--port", type=int, default=PORT)
+    884 +    parser.add_argument("--shared-session-tracker", action="store_true")
+    885 +    args = parser.parse_args()
+    886 +
+    887 +    if args.shared_session_tracker and args.host not in ("127.0.0.1", "localhost", "::1"):
+    888 +        parser.error("--shared-session-tracker is restricted to a loopback --host")
+    889
+        ⋮
+    895
+    880 -    return args.plugins, tls_options, args.cvm_floor
+    896 +    return args.plugins, tls_options, args.cvm_floor, args.host, args.port, args.shared_session_tracker
+    897
+        ⋮
+    933
+    918 -def main():
+    919 -    plugins, tls_options, cvm_floor = parse_args()
+    934 +def main():
+    935 +    plugins, tls_options, cvm_floor, host, port, shared_session_tracker = parse_args()
+    936
+        ⋮
+    938
+    923 -    server = NFCGateServer((HOST, PORT), NFCGateClientHandler, plugins, tls_options, cvm_floor)
+    939 +    server = NFCGateServer(
+    940 +        (host, port), NFCGateClientHandler, plugins, tls_options, cvm_floor,
+    941 +        shared_session_tracker=shared_session_tracker,
+    942 +    )
+    943

@@ -20,6 +20,7 @@ import sqlite3
 from logging.handlers import RotatingFileHandler
 from plugins.c2s_pb2 import ServerData
 from plugins.c2c_pb2 import NFCData
+from session_tracker import SessionTrackerRegistry
 from typing import List, Optional, Dict
 from dataclasses import dataclass
 from queue import Queue, Empty
@@ -786,14 +787,19 @@ class NFCGateClientHandler(socketserver.StreamRequestHandler):
 class NFCGateServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
-    def __init__(self, server_address, handler, plugins, tls_options=None, cvm_floor="2710"):
+    def __init__(self, server_address, handler, plugins, tls_options=None, cvm_floor="2710",
+                 shared_session_tracker=False):
         super().__init__(server_address, handler)
         self.clients: Dict[int, List] = {}
         self.clients_lock = threading.RLock()
         self.total_clients = 0
         self.plugins = PluginHandler(plugins)
         self.cvm_forcer = EnhancedCVMForce(bytes.fromhex(cvm_floor))
-        logger.info("=== NFCGate Server v42 - framed session protocol ===")
+        self.session_trackers = (
+            SessionTrackerRegistry(EMVFlowTracker) if shared_session_tracker else None
+        )
+        tracker_mode = "shared-session" if shared_session_tracker else "per-connection"
+        logger.info(f"=== NFCGate Server v42 - framed session protocol; tracker={tracker_mode} ===")
 
     def add_client(self, client, session: int):
         with self.clients_lock:
@@ -806,6 +812,8 @@ class NFCGateServer(socketserver.ThreadingTCPServer):
                 return False
             clients.append(client)
             self.total_clients += 1
+            if self.session_trackers is not None:
+                client.emv_tracker = self.session_trackers.acquire(session)
             return True
 
     def peer_count(self, session: int) -> int:
@@ -817,6 +825,8 @@ class NFCGateServer(socketserver.ThreadingTCPServer):
             if secret in self.clients and client in self.clients[secret]:
                 self.clients[secret].remove(client)
                 self.total_clients -= 1
+                if self.session_trackers is not None:
+                    self.session_trackers.release(secret)
                 if not self.clients[secret]:
                     del self.clients[secret]
 
@@ -869,7 +879,13 @@ def parse_args():
     parser.add_argument("--tls-cert")
     parser.add_argument("--tls-key")
     parser.add_argument("--cvm-floor", default="2710")
+    parser.add_argument("--host", default=HOST)
+    parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--shared-session-tracker", action="store_true")
     args = parser.parse_args()
+
+    if args.shared_session_tracker and args.host not in ("127.0.0.1", "localhost", "::1"):
+        parser.error("--shared-session-tracker is restricted to a loopback --host")
 
     tls_options = None
     if args.tls and args.tls_cert and args.tls_key:
@@ -877,7 +893,7 @@ def parse_args():
         context.load_cert_chain(args.tls_cert, args.tls_key)
         tls_options = {"context": context}
 
-    return args.plugins, tls_options, args.cvm_floor
+    return args.plugins, tls_options, args.cvm_floor, args.host, args.port, args.shared_session_tracker
 
 def cleanup():
     terminal_memory.close()
@@ -916,11 +932,14 @@ signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 atexit.register(cleanup)
 
 def main():
-    plugins, tls_options, cvm_floor = parse_args()
+    plugins, tls_options, cvm_floor, host, port, shared_session_tracker = parse_args()
 
     threading.Thread(target=db_backup_thread, daemon=True).start()
 
-    server = NFCGateServer((HOST, PORT), NFCGateClientHandler, plugins, tls_options, cvm_floor)
+    server = NFCGateServer(
+        (host, port), NFCGateClientHandler, plugins, tls_options, cvm_floor,
+        shared_session_tracker=shared_session_tracker,
+    )
 
     host_ip = get_host_ip()
     threading.Thread(target=notify_online, args=(host_ip, config.get("notify_url")), daemon=True).start()

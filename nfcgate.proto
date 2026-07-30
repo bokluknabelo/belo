@@ -1,0 +1,85 @@
+syntax = "proto2";
+
+package nfcgate;
+
+message Session {
+  enum Opcode {
+    SESSION_CREATE = 1;
+    SESSION_CREATE_SUCCESS = 2;
+    SESSION_CREATE_FAIL = 3;
+    SESSION_JOIN = 4;
+    SESSION_JOIN_SUCCESS = 5;
+    SESSION_JOIN_FAIL = 6;
+    SESSION_LEAVE = 7;
+    SESSION_LEAVE_SUCCESS = 8;
+    SESSION_LEAVE_FAIL = 9;
+    SESSION_PEER_JOINED = 10;
+    SESSION_PEER_LEFT = 11;
+  }
+  enum ErrorCode {
+    ERROR_NOERROR = 0;
+    ERROR_INVALID_SESSION = 1;
+    ERROR_CREATE_ALREADY_HAS_SESSION = 2;
+    ERROR_JOIN_ALREADY_HAS_SESSION = 3;
+    ERROR_JOIN_UNKNOWN_SECRET = 4;
+    ERROR_JOIN_SESSION_FULL = 5;
+    ERROR_LEAVE_NOT_JOINED = 6;
+  }
+  required Opcode opcode = 1;
+  optional ErrorCode errcode = 2 [default = ERROR_NOERROR];
+  optional string session_secret = 3;
+}
+
+message Data {
+  enum ErrorCode {
+    ERROR_NOERROR = 0;
+    ERROR_NO_SESSION = 1;
+    ERROR_TRANSMISSION_FAILED = 2;
+  }
+  optional ErrorCode errcode = 1 [default = ERROR_NOERROR];
+  optional bytes blob = 2;
+}
+
+message Anticol {
+  optional bytes uid = 1;
+  optional bytes atqa = 2;
+  optional bytes sak = 3;
+  optional bytes historical = 4;
+}
+
+message NFCData {
+  enum DataSource { READER = 1; CARD = 2; }
+  enum DataType { INITIAL = 1; RAW = 2; }
+  required bytes data = 1;
+  required DataSource data_source = 2;
+  required DataType data_type = 3;
+  optional int64 timestamp = 4;
+}
+
+message Status {
+  enum StatusType {
+    KEEPALIVE_REQ = 1;
+    KEEPALIVE_REP = 2;
+    CARD_FOUND = 3;
+    CARD_REMOVED = 4;
+    READER_FOUND = 5;
+    READER_REMOVED = 6;
+    NFC_NO_CONN = 7;
+    INVALID_MSG_FMT = 8;
+    NOT_IMPLEMENTED = 9;
+    UNKNOWN_MESSAGE = 10;
+    UNKNOWN_ERROR = 11;
+  }
+  required StatusType type = 1;
+  optional string message = 2;
+}
+
+message Wrapper {
+  oneof message {
+    Session session = 1;
+    Data data = 2;
+    Anticol anticol = 3;
+    NFCData nfc_data = 4;
+    Status status = 5;
+  }
+}
